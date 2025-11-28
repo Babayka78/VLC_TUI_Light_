@@ -4,9 +4,9 @@
 #VLC_SCRIPT="$HOME/vlc/vlc-cec.sh"
 VLC_SCRIPT="./vlc-cec.sh"
 
-# Подключаем библиотеку отслеживания сериалов
+# Подключаем библиотеку отслеживания прогресса воспроизведения
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/series-tracker.sh"
+source "$SCRIPT_DIR/playback-tracker.sh"
 
 # Начальная директория
 START_DIR="$HOME/mac_disk"
@@ -27,6 +27,7 @@ fi
 # Функция для отображения меню с dialog
 show_menu() {
     local current_dir="$1"
+    local default_item="$2"  # Опционально: на какой элемент вернуть курсор
     local title="Выбор видео: ${current_dir/#$HOME/~}"
     
     # Получаем список файлов и папок
@@ -49,17 +50,16 @@ show_menu() {
         local filename=$(basename "$file")
         local filesize=$(du -h "$file" | cut -f1)
         
-        # Добавляем иконку статуса для сериалов
-        local display_name="$filename"
-        if is_series_file "$filename"; then
-            local status_icon=$(get_status_icon "$current_dir" "$filename")
-            if [ -n "$status_icon" ]; then
-                display_name="${status_icon} ${filename}"
-            fi
+        # Формируем описание с иконкой статуса и размером
+        local description="$filesize"
+        local status_icon=$(get_status_icon "$current_dir" "$filename")
+        if [ -n "$status_icon" ]; then
+            # Иконка + размер в описании
+            description="${status_icon} ${filesize}"
         fi
         
-        # В меню: ключ = название с иконкой, описание = только размер
-        items+=("$display_name" "$filesize")
+        # В меню: tag = чистое имя файла (для hotkey), description = иконка + размер
+        items+=("$filename" "$description")
     done < <(find "$current_dir" -maxdepth 1 -type f \( -iname "*.avi" -o -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" \) -print0 | sort -z)
     
     # Если нет элементов
@@ -95,67 +95,66 @@ show_menu() {
         max_width=120
     fi
     
-    # ОТЛАДКА: показываем вычисленную ширину
-    echo "DEBUG: Вычисленная ширина окна: $max_width"
-    
     local choice
-    choice=$(dialog --output-fd 1 \
-        --title "$title" \
-        --menu "Выберите файл или папку:" 20 $max_width 15 \
-        "${items[@]}" \
-        2>/dev/tty)
+    if [ -n "$default_item" ]; then
+        # Возвращаем курсор на указанный элемент
+        choice=$(dialog --colors --output-fd 1 \
+            --title "$title" \
+            --default-item "$default_item" \
+            --menu "Выберите файл или папку:" 20 $max_width 15 \
+            "${items[@]}" \
+            2>/dev/tty)
+    else
+        choice=$(dialog --colors --output-fd 1 \
+            --title "$title" \
+            --menu "Выберите файл или папку:" 20 $max_width 15 \
+            "${items[@]}" \
+            2>/dev/tty)
+    fi
     
     local exit_code=$?
     
     # Обработка выбора
     if [ $exit_code -eq 0 ] && [ -n "$choice" ]; then
-        # Убираем иконку из выбора если есть ([X] filename -> filename)
-        local clean_choice="$choice"
-        if [[ "$choice" =~ ^\[.\]\ (.+)$ ]]; then
-            clean_choice="${BASH_REMATCH[1]}"
-        fi
+        # choice уже содержит чистое имя файла (без иконок)
         
-        if [ "$clean_choice" == ".." ]; then
-            # Переход на уровень выше
+        if [ "$choice" == ".." ]; then
+            # Переход на уровень выше - возвращаем курсор на папку из которой вышли
             local parent_dir=$(dirname "$current_dir")
+            local folder_name=$(basename "$current_dir")  # Название текущей папки
             if [ "$parent_dir" != "/" ]; then
-                show_menu "$parent_dir"
+                show_menu "$parent_dir" "$folder_name"
             else
                 show_menu "$START_DIR"
             fi
-        elif [ -d "$current_dir/$clean_choice" ]; then
+        elif [ -d "$current_dir/$choice" ]; then
             # Переход в директорию
-            show_menu "$current_dir/$clean_choice"
-        elif [ -f "$current_dir/$clean_choice" ]; then
+            show_menu "$current_dir/$choice"
+        elif [ -f "$current_dir/$choice" ]; then
             # Запуск видео
             clear
-            echo "Запуск: $clean_choice"
+            echo "Запуск: $choice"
             echo ""
             
-            # Проверяем есть ли сохранённая позиция для сериала
-            if is_series_file "$clean_choice"; then
-                local progress=$(load_progress "$current_dir" "$clean_choice")
-                if [ -n "$progress" ]; then
-                    local saved_seconds=$(echo "$progress" | cut -d: -f1)
-                    local saved_percent=$(echo "$progress" | cut -d: -f3)
-                    
-                    # Показываем информацию о сохранённой позиции
-                    echo "Найдена сохранённая позиция: ${saved_percent}% ($(($saved_seconds / 60)) мин $(($saved_seconds % 60)) сек)"
-                    echo ""
-                    
-                    # Запуск VLC с сохранённой позиции (передаём секунды отдельным параметром)
-                    "$VLC_SCRIPT" "$saved_seconds" "$current_dir/$clean_choice"
-                else
-                    # Запуск с начала
-                    "$VLC_SCRIPT" "$current_dir/$clean_choice"
-                fi
+            # Проверяем есть ли сохранённая позиция для видеофайла
+            local progress=$(load_progress "$current_dir" "$choice")
+            if [ -n "$progress" ]; then
+                local saved_seconds=$(echo "$progress" | cut -d: -f1)
+                local saved_percent=$(echo "$progress" | cut -d: -f3)
+                
+                # Показываем информацию о сохранённой позиции
+                echo "Найдена сохранённая позиция: ${saved_percent}% ($(($saved_seconds / 60)) мин $(($saved_seconds % 60)) сек)"
+                echo ""
+                
+                # Запуск VLC с сохранённой позиции (передаём секунды отдельным параметром)
+                "$VLC_SCRIPT" "$saved_seconds" "$current_dir/$choice"
             else
-                # Обычный файл - запуск с начала
-                "$VLC_SCRIPT" "$current_dir/$clean_choice"
+                # Запуск с начала
+                "$VLC_SCRIPT" "$current_dir/$choice"
             fi
             
-	    # Автоматический возврат в меню
-            show_menu "$current_dir"
+	    # Автоматический возврат в меню - курсор на только что просмотренном видео
+            show_menu "$current_dir" "$choice"
         fi
     elif [ $exit_code -eq 1 ]; then
         # Отмена - выход

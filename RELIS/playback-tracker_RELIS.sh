@@ -1,13 +1,13 @@
 #!/bin/bash
-# series-tracker.sh
-# Библиотека для отслеживания прогресса просмотра сериалов
-# Использование: source "$HOME/vlc/series-tracker.sh"
+# playback-tracker.sh
+# Библиотека для отслеживания прогресса воспроизведения видеофайлов
+# Использование: source "$HOME/vlc/playback-tracker.sh"
 
 # ============================================================
 # НАСТРОЙКИ (можно изменять для тонкой настройки)
 # ============================================================
 
-# Паттерн для определения сериалов
+# Паттерн для определения сериалов (legacy, для обратной совместимости)
 # Поддерживает S##E## с любыми разделителями: . - _ пробел или без разделителя
 # Примеры: S01E01, S01.E01, S01-E01, S01_E01, S01 E01
 SERIES_PATTERN='S[0-9][0-9][-_. ]*E[0-9][0-9]'
@@ -23,6 +23,8 @@ MONITOR_INTERVAL=60
 # ФУНКЦИИ
 # ============================================================
 
+# DEPRECATED: Эта функция больше не используется, оставлена для обратной совместимости
+# TODO: Удалить в следующей версии
 # Проверяет является ли файл сериалом по паттерну
 # Использование: is_series_file "filename"
 # Возвращает: 0 если сериал, 1 если нет
@@ -36,6 +38,8 @@ is_series_file() {
     return 1
 }
 
+# DEPRECATED: Эта функция больше не используется, оставлена для обратной совместимости
+# TODO: Удалить в следующей версии
 # Извлекает код эпизода (S##E##) из имени файла
 # Использование: get_episode_code "filename"
 # Возвращает: S01E01 или пустую строку
@@ -62,29 +66,29 @@ get_episode_code() {
     return 1
 }
 
-# Возвращает путь к .ser файлу для директории
-# Использование: get_ser_file "/path/to/series/dir"
-# Возвращает: /path/to/series/dir/.ser
-get_ser_file() {
+# Возвращает путь к .playback файлу для директории
+# Использование: get_playback_file "/path/to/video/dir"
+# Возвращает: /path/to/video/dir/.playback
+get_playback_file() {
     local dir="$1"
-    echo "$dir/.ser"
+    echo "$dir/.playback"
 }
 
-# Загружает прогресс просмотра для файла из .ser
+# Загружает прогресс воспроизведения для файла из .playback
 # Использование: load_progress "/path/to/dir" "filename"
 # Возвращает: "seconds:total:percent" или пустую строку
 load_progress() {
     local dir="$1"
     local filename="$2"
-    local ser_file=$(get_ser_file "$dir")
+    local playback_file=$(get_playback_file "$dir")
     
-    if [ ! -f "$ser_file" ]; then
+    if [ ! -f "$playback_file" ]; then
         echo ""
         return 1
     fi
     
     # Ищем строку с filename
-    local line=$(grep "^${filename}:" "$ser_file" 2>/dev/null)
+    local line=$(grep "^${filename}:" "$playback_file" 2>/dev/null)
     
     if [ -z "$line" ]; then
         echo ""
@@ -97,7 +101,7 @@ load_progress() {
     return 0
 }
 
-# Сохраняет прогресс просмотра в .ser файл
+# Сохраняет прогресс воспроизведения в .playback файл
 # Использование: save_progress "/path/to/dir" "filename" seconds total percent
 save_progress() {
     local dir="$1"
@@ -105,15 +109,15 @@ save_progress() {
     local seconds="$3"
     local total="$4"
     local percent="$5"
-    local ser_file=$(get_ser_file "$dir")
+    local playback_file=$(get_playback_file "$dir")
     local timestamp=$(date +%s)
     
     # Создаём временный файл
-    local temp_file="${ser_file}.tmp"
+    local temp_file="${playback_file}.tmp"
     
-    # Если .ser не существует - создаём новый
-    if [ ! -f "$ser_file" ]; then
-        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" > "$ser_file"
+    # Если .playback не существует - создаём новый
+    if [ ! -f "$playback_file" ]; then
+        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" > "$playback_file"
         return 0
     fi
     
@@ -127,7 +131,7 @@ save_progress() {
         else
             echo "$line" >> "$temp_file"
         fi
-    done < "$ser_file"
+    done < "$playback_file"
     
     # Если не нашли - добавляем новую запись
     if [ $found -eq 0 ]; then
@@ -135,7 +139,7 @@ save_progress() {
     fi
     
     # Заменяем файл
-    mv "$temp_file" "$ser_file"
+    mv "$temp_file" "$playback_file"
     return 0
 }
 
@@ -145,12 +149,6 @@ save_progress() {
 get_status_icon() {
     local dir="$1"
     local filename="$2"
-    
-    # Проверяем что это сериал
-    if ! is_series_file "$filename"; then
-        echo ""
-        return 1
-    fi
     
     # Загружаем прогресс
     local progress=$(load_progress "$dir" "$filename")

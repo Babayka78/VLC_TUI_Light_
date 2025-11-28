@@ -1,6 +1,6 @@
 # Вводные данные для новой сессии
 **Дата создания:** 27.11.2025, 19:13  
-**Последнее обновление:** 27.11.2025, 19:13
+**Последнее обновление:** 27.11.2025, 21:46
 
 ---
 
@@ -53,24 +53,39 @@ Summary_251127_1745_V1_251127_2021.bak
 **Структура хранения:**
 ```
 /vlc/
-├── *.sh                    # Рабочие файлы
-├── *_RELIS.sh             # Релизные версии  
-├── *.md                    # Документация
+├── *.sh                    # Рабочие файлы (playback-tracker, video-menu, vlc-cec)
+├── README.md               # Описание для GitHub (в корне)
+├── backup-end-of-day.sh    # Скрипт бэкапов
+├── RELIS/                  # Релизные версии
+│   ├── playback-tracker_RELIS.sh
+│   ├── video-menu_RELIS.sh
+│   ├── vlc-cec_RELIS.sh
+│   └── series-tracker_RELIS.sh (legacy)
+├── DOCS/                   # Вся документация
+│   ├── HANDOFF-NEXT-SESSION.md
+│   ├── CHANGELOG.md
+│   ├── Summary_*.md
+│   └── future_features/
+│       └── development_roadmap.md
 ├── BAK/                    # Папка бэкапов
-│   ├── 251127/             # Бэкапы за 27.11.2025
-│   │   ├── *_V#_*.bak
-│   │   └── Summary_*.bak
 │   ├── 251128/             # Бэкапы за 28.11.2025
+│   │   ├── *_V#_*.bak      # .sh и .md файлы
+│   │   └── Summary_*.md    # Копии Summary
 │   └── ...
 └── archive/
     └── old_backups_*/      # Архив старых форматов
 ```
 
+**Расположение документации:**
+- Вся текущая документация находится в `DOCS/`
+- README.md остаётся в корне (для GitHub)
+- Summary файлы создаются сразу в `DOCS/`
+
 **Правила создания бэкапов:**
 
 1. **В НАЧАЛЕ рабочего дня:**
-   - Прочитать HANDOFF-NEXT-SESSION.md
-   - Создать Summary_YYMMDD_HHMM.md (технический отчёт о плане работы)
+   - Прочитать `DOCS/HANDOFF-NEXT-SESSION.md`
+   - Создать `DOCS/Summary_YYMMDD_HHMM.md` (технический отчёт о плане работы)
    - Создать папку `BAK/YYMMDD/` если её нет
 
 2. **ПЕРЕД изменениями рабочих файлов:**
@@ -78,16 +93,28 @@ Summary_251127_1745_V1_251127_2021.bak
    - Нумерация V# продолжается от последнего в `BAK/`
    - Бэкап сразу поместить в `BAK/YYMMDD/`
 
-3. **В КОНЦЕ рабочего дня (обязательно!):**
-   - Создать бэкапы ВСЕХ RELIS файлов (даже без изменений)
-   - Создать бэкап Summary файла за сегодня
-   - Создать бэкап HANDOFF-NEXT-SESSION.md
-   - Создать бэкап CHANGELOG.md
-   - Все бэкапы поместить в `BAK/YYMMDD/`
+3. **ПЕРЕД обновлением RELIS файлов (КРИТИЧНО!):**
+   - ВСЕГДА создавать бэкап текущей RELIS версии ПЕРЕД перезаписью
+   - Только после бэкапа копировать новую версию в `RELIS/`
+   - Пример:
+     ```bash
+     cp RELIS/vlc-cec_RELIS.sh BAK/251128/vlc-cec_RELIS_V5_251128_1330.bak
+     cp vlc-cec.sh RELIS/vlc-cec_RELIS.sh
+     ```
 
-4. **Архивирование:**
+4. **В КОНЦЕ рабочего дня (обязательно!):**
+   - Создать бэкапы ВСЕХ RELIS файлов из `RELIS/` (даже без изменений)
+   - Создать бэкапы .md файлов из `DOCS/`:
+     - HANDOFF-NEXT-SESSION.md
+     - CHANGELOG.md
+     - development_roadmap.md
+     - Summary_YYMMDD_*.md (текущие)
+   - Все бэкапы поместить в `BAK/YYMMDD/`
+   - Использовать: `./backup-end-of-day.sh`
+
+5. **Архивирование:**
    - Старые форматы перемещать в `archive/old_backups_YYMMDD/`
-   - Бэкапы старше 30 дней можно архивировать/удалять
+   - Бэкапы старше 30 дней можно архивировать
 
 **Команды для ежедневного workflow:**
 
@@ -96,6 +123,10 @@ Summary_251127_1745_V1_251127_2021.bak
 # 1. Создать папку для бэкапов
 TODAY=$(date +%y%m%d)
 mkdir -p BAK/$TODAY
+
+# 2. Создать Summary в DOCS/
+TIMESTAMP=$(date +%y%m%d_%H%M)
+# vi DOCS/Summary_${TODAY}_${TIMESTAMP}.md
 
 # 2. После создания Summary
 TIMESTAMP=$(date +%y%m%d_%H%M)
@@ -107,24 +138,25 @@ cp Summary_${TODAY}_*.md BAK/$TODAY/Summary_${TODAY}_*_V1_${TIMESTAMP}.bak
 TIMESTAMP=$(date +%y%m%d_%H%M)
 cp vlc-cec.sh BAK/$TODAY/vlc-cec_V6_${TIMESTAMP}.bak
 
-# === КОНЕЦ ДНЯ ===
-# 4. Бэкап ВСЕХ RELIS файлов
-TODAY=$(date +%y%m%d)
+# === ПЕРЕД ОБНОВЛЕНИЕМ RELIS ===
+# КРИТИЧНО: Сначала бэкап, потом копирование!
 TIMESTAMP=$(date +%y%m%d_%H%M)
+cp RELIS/vlc-cec_RELIS.sh BAK/251128/vlc-cec_RELIS_V5_${TIMESTAMP}.bak
+cp vlc-cec.sh RELIS/vlc-cec_RELIS.sh
 
-cp vlc-cec_RELIS.sh BAK/$TODAY/vlc-cec_RELIS_V2_${TIMESTAMP}.bak
-cp video-menu_RELIS.sh BAK/$TODAY/video-menu_RELIS_V2_${TIMESTAMP}.bak
-cp series-tracker_RELIS.sh BAK/$TODAY/series-tracker_RELIS_V2_${TIMESTAMP}.bak
+# === КОНЕЦ ДНЯ ===
+# 4. Автоматический бэкап через скрипт
+./backup-end-of-day.sh
 
-# 5. Бэкап документации
-cp HANDOFF-NEXT-SESSION.md BAK/$TODAY/HANDOFF-NEXT-SESSION_V3_${TIMESTAMP}.bak
-cp CHANGELOG.md BAK/$TODAY/CHANGELOG_V2_${TIMESTAMP}.bak
-cp Summary_${TODAY}_*.md BAK/$TODAY/Summary_${TODAY}_*_V2_${TIMESTAMP}.bak
+# Скрипт создаст бэкапы:
+# - ВСЕХ RELIS файлов из RELIS/
+# - ВСЕХ .md документов
+# - Summary файлов за сегодня
 ```
 
-**Автоматизация (скрипт для конца дня):**
+**Автоматизация (скрипт backup-end-of-day.sh):**
 
-Можно создать `backup-end-of-day.sh`:
+Скрипт уже создан и обновлён для новой структуры:
 ```bash
 #!/bin/bash
 TODAY=$(date +%y%m%d)
@@ -133,15 +165,17 @@ mkdir -p BAK/$TODAY
 
 echo "Создание бэкапов на конец дня..."
 
-# RELIS файлы
-cp vlc-cec_RELIS.sh BAK/$TODAY/vlc-cec_RELIS_V#_${TIMESTAMP}.bak
-cp video-menu_RELIS.sh BAK/$TODAY/video-menu_RELIS_V#_${TIMESTAMP}.bak
-cp series-tracker_RELIS.sh BAK/$TODAY/series-tracker_RELIS_V#_${TIMESTAMP}.bak
+# RELIS файлы из папки RELIS/
+cp RELIS/vlc-cec_RELIS.sh BAK/$TODAY/vlc-cec_RELIS_V#_${TIMESTAMP}.bak
+cp RELIS/video-menu_RELIS.sh BAK/$TODAY/video-menu_RELIS_V#_${TIMESTAMP}.bak
+cp RELIS/playback-tracker_RELIS.sh BAK/$TODAY/playback-tracker_RELIS_V#_${TIMESTAMP}.bak
+cp RELIS/series-tracker_RELIS.sh BAK/$TODAY/series-tracker_RELIS_V#_${TIMESTAMP}.bak
 
-# Документация
-cp HANDOFF-NEXT-SESSION.md BAK/$TODAY/HANDOFF-NEXT-SESSION_V#_${TIMESTAMP}.bak
-cp CHANGELOG.md BAK/$TODAY/CHANGELOG_V#_${TIMESTAMP}.bak
-cp Summary_${TODAY}_*.md BAK/$TODAY/ 2>/dev/null
+# Документация .md из DOCS/
+cp DOCS/HANDOFF-NEXT-SESSION.md BAK/$TODAY/HANDOFF-NEXT-SESSION_V#_${TIMESTAMP}.bak
+cp DOCS/CHANGELOG.md BAK/$TODAY/CHANGELOG_V#_${TIMESTAMP}.bak
+cp DOCS/future_features/development_roadmap.md BAK/$TODAY/development_roadmap_V#_${TIMESTAMP}.bak
+cp DOCS/Summary_${TODAY}_*.md BAK/$TODAY/ 2>/dev/null
 
 echo "✓ Бэкапы созданы в BAK/$TODAY/"
 ```

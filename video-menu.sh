@@ -95,9 +95,6 @@ show_menu() {
         max_width=120
     fi
     
-    # ОТЛАДКА: показываем вычисленную ширину
-    echo "DEBUG: Вычисленная ширина окна: $max_width"
-    
     local choice
     if [ -n "$default_item" ]; then
         # Возвращаем курсор на указанный элемент
