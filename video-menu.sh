@@ -7,6 +7,7 @@ VLC_SCRIPT="./vlc-cec.sh"
 # Подключаем библиотеку отслеживания прогресса воспроизведения
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/playback-tracker.sh"
+source "$SCRIPT_DIR/serials.sh"
 
 # Начальная директория
 START_DIR="$HOME/mac_disk"
@@ -29,6 +30,11 @@ show_menu() {
     local current_dir="$1"
     local default_item="$2"  # Опционально: на какой элемент вернуть курсор
     local title="Выбор видео: ${current_dir/#$HOME/~}"
+    
+    # ВАРИАНТ 2: Получаем статус настроек для отображения в подзаголовке
+    local settings_status=$(get_settings_status_compact "$current_dir")
+    # Центрируем текст с настройками
+    local menu_text="\n                  $settings_status\n"
     
     # Получаем список файлов и папок
     local items=()
@@ -101,13 +107,15 @@ show_menu() {
         choice=$(dialog --colors --output-fd 1 \
             --title "$title" \
             --default-item "$default_item" \
-            --menu "Выберите файл или папку:" 20 $max_width 15 \
+            --extra-button --extra-label "Настройки" \
+            --menu "$menu_text" 20 $max_width 15 \
             "${items[@]}" \
             2>/dev/tty)
     else
         choice=$(dialog --colors --output-fd 1 \
             --title "$title" \
-            --menu "Выберите файл или папку:" 20 $max_width 15 \
+            --extra-button --extra-label "Настройки" \
+            --menu "$menu_text" 20 $max_width 15 \
             "${items[@]}" \
             2>/dev/tty)
     fi
@@ -115,7 +123,12 @@ show_menu() {
     local exit_code=$?
     
     # Обработка выбора
-    if [ $exit_code -eq 0 ] && [ -n "$choice" ]; then
+    if [ $exit_code -eq 3 ]; then
+        # Нажата кнопка "Настройки"
+        show_series_settings "$current_dir"
+        # Вернуться в меню на тот же элемент
+        show_menu "$current_dir" "$default_item"
+    elif [ $exit_code -eq 0 ] && [ -n "$choice" ]; then
         # choice уже содержит чистое имя файла (без иконок)
         
         if [ "$choice" == ".." ]; then

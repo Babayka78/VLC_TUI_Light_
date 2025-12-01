@@ -53,9 +53,27 @@ logs/
 .idea/
 *.sublime-*
 
-# Тестовые файлы (если будут)
+# Тестовые файлы (все варианты)
 test_*.sh
 *_test.sh
+*-test-*.sh
+*-test-*.md
+
+# База данных SQLite
+vlc_media.db
+vlc_media.db-journal
+
+# Файлы настроек сериалов
+*.series_settings
+*.folder_settings
+
+# Артефакты сессий (хранятся локально)
+DOCS/Brain/
+
+# Legacy файлы
+DOCS/HANDOFF-NEXT-SESSION_backup_*.md
+DOCS/final_check_*.md
+DOCS/task/
 
 # Рабочие файлы разработки (только локально)
 DOCS/dev_notes/

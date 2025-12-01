@@ -1,16 +1,20 @@
 #!/bin/bash
 # playback-tracker.sh - Библиотека отслеживания прогресса воспроизведения
-# Версия: 0.2.0
+# Версия: 0.3.0
 # Changelog:
-#   0.2.0 (2025-11-28) - Добавлен VLC мониторинг (monitor_vlc_playback, finalize_playback)
-#   0.1.0 (2025-11-28) - Рефакторинг .ser → .playback, универсальное отслеживание
-#   0.0.1 (начальная) - Базовые функции (save_progress, load_progress, get_status_icon)
+#   0.1.0 - Первая версия
+#   0.2.0 - Добавлен автомониторинг VLC (29.11.2025)
+#   0.3.0 - Переход на SQLite БД (29.11.2025)
 #
 # Использование: source "$SCRIPT_DIR/playback-tracker.sh"
 
+# Подключаем БД библиотеку
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/db-manager.sh"
+
 # Версия библиотеки (Semantic Versioning: MAJOR.MINOR.PATCH)
-PLAYBACK_TRACKER_VERSION="0.2.0"
-PLAYBACK_TRACKER_MIN_VERSION="0.2.0"  # Минимальная совместимая версия
+PLAYBACK_TRACKER_VERSION="0.3.0"
+PLAYBACK_TRACKER_MIN_VERSION="0.3.0"  # Минимальная совместимая версия
 
 # Функция проверки совместимости версий
 check_version_compatibility() {
@@ -108,24 +112,18 @@ get_playback_file() {
 load_progress() {
     local dir="$1"
     local filename="$2"
-    local playback_file=$(get_playback_file "$dir")
     
-    if [ ! -f "$playback_file" ]; then
+    # Используем БД вместо файлов
+    local playback_data=$(db_get_playback "$filename")
+    
+    if [ -z "$playback_data" ]; then
         echo ""
         return 1
     fi
     
-    # Ищем строку с filename
-    local line=$(grep "^${filename}:" "$playback_file" 2>/dev/null)
-    
-    if [ -z "$line" ]; then
-        echo ""
-        return 1
-    fi
-    
-    # Формат: filename:seconds:total:percent:timestamp
-    # Возвращаем: seconds:total:percent
-    echo "$line" | cut -d: -f2-4
+    # Формат из БД: position|duration|percent|series_key
+    # Возвращаем: position:duration:percent (для совместимости)
+    echo "$playback_data" | cut -d'|' -f1-3 | tr '|' ':'
     return 0
 }
 
@@ -137,37 +135,16 @@ save_progress() {
     local seconds="$3"
     local total="$4"
     local percent="$5"
-    local playback_file=$(get_playback_file "$dir")
-    local timestamp=$(date +%s)
     
-    # Создаём временный файл
-    local temp_file="${playback_file}.tmp"
+    # Извлекаем series_key из имени файла
+    local series_key=$(extract_series_key "$filename")
     
-    # Если .playback не существует - создаём новый
-    if [ ! -f "$playback_file" ]; then
-        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" > "$playback_file"
-        return 0
-    fi
+    # Сохраняем в БД
+    db_save_playback "$filename" "$seconds" "$total" "$percent" "$series_key"
     
-    # Обновляем существующую запись или добавляем новую
-    local found=0
-    while IFS= read -r line; do
-        if [[ "$line" == "${filename}:"* ]]; then
-            # Обновляем существующую запись
-            echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" >> "$temp_file"
-            found=1
-        else
-            echo "$line" >> "$temp_file"
-        fi
-    done < "$playback_file"
+    # DEBUG: Сохраняем timestamp в description для тестов
+    db_save_debug_info "$filename" "updated_at:$(date +%s)"
     
-    # Если не нашли - добавляем новую запись
-    if [ $found -eq 0 ]; then
-        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" >> "$temp_file"
-    fi
-    
-    # Заменяем файл
-    mv "$temp_file" "$playback_file"
     return 0
 }
 
@@ -178,17 +155,8 @@ get_status_icon() {
     local dir="$1"
     local filename="$2"
     
-    # Загружаем прогресс
-    local progress=$(load_progress "$dir" "$filename")
-    
-    if [ -z "$progress" ]; then
-        # Нет прогресса - не просмотрено
-        echo "[ ]"
-        return 0
-    fi
-    
-    # Извлекаем процент
-    local percent=$(echo "$progress" | cut -d: -f3)
+    # Используем БД напрямую
+    local percent=$(db_get_playback_percent "$filename")
     
     # Определяем иконку по порогам
     if [ "$percent" -ge "$WATCHED_THRESHOLD" ]; then
