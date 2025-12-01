@@ -1,3 +1,7 @@
+# Локальные скрипты автоматизации (не для GitHub)
+backup-end-of-day.sh
+git-push-daily.sh
+
 # Бэкапы (хранятся в BAK/)
 *.bak
 BAK/
