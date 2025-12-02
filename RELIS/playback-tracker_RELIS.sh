@@ -1,16 +1,21 @@
 #!/bin/bash
 # playback-tracker.sh - Библиотека отслеживания прогресса воспроизведения
-# Версия: 0.2.0
+# Версия: 0.3.1
 # Changelog:
-#   0.2.0 (2025-11-28) - Добавлен VLC мониторинг (monitor_vlc_playback, finalize_playback)
-#   0.1.0 (2025-11-28) - Рефакторинг .ser → .playback, универсальное отслеживание
-#   0.0.1 (начальная) - Базовые функции (save_progress, load_progress, get_status_icon)
+#   0.1.0 - Первая версия
+#   0.2.0 - Добавлен автомониторинг VLC (29.11.2025)
+#   0.3.0 - Переход на SQLite БД (29.11.2025)
+#   0.3.1 - Добавлено кеширование процентов (02.12.2025)
 #
 # Использование: source "$SCRIPT_DIR/playback-tracker.sh"
 
+# Подключаем БД библиотеку
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/db-manager.sh"
+
 # Версия библиотеки (Semantic Versioning: MAJOR.MINOR.PATCH)
-PLAYBACK_TRACKER_VERSION="0.2.0"
-PLAYBACK_TRACKER_MIN_VERSION="0.2.0"  # Минимальная совместимая версия
+PLAYBACK_TRACKER_VERSION="0.3.1"
+PLAYBACK_TRACKER_MIN_VERSION="0.3.0"  # Минимальная совместимая версия
 
 # Функция проверки совместимости версий
 check_version_compatibility() {
@@ -47,9 +52,50 @@ PARTIAL_THRESHOLD=1      # Минимальный процент для [T] - ч
 # Интервал мониторинга в секундах
 MONITOR_INTERVAL=60
 
-# ============================================================
-# ФУНКЦИИ
-# ============================================================
+# Кеш процентов просмотра (ассоциативный массив)
+declare -A PLAYBACK_PERCENT_CACHE
+
+# ============================================================================
+# ФУНКЦИИ КЕШИРОВАНИЯ (оптимизация производительности)
+# ============================================================================
+
+# Пакетная загрузка процентов для всех файлов в папке (1 SQL запрос вместо N)
+cache_playback_percents() {
+    local directory="$1"
+    shift
+    local filenames=("$@")
+    
+    # Очищаем кеш
+    PLAYBACK_PERCENT_CACHE=()
+    
+    if [ ${#filenames[@]} -eq 0 ]; then
+        return 0
+    fi
+    
+    # Вызываем пакетную загрузку
+    local batch_result=$(python3 "${SCRIPT_DIR}/vlc_db.py" get_batch "$directory" "${filenames[@]}")
+    
+    # Парсим результат и заполняем кеш
+    while IFS=':' read -r filename percent; do
+        PLAYBACK_PERCENT_CACHE["$filename"]="$percent"
+    done <<< "$batch_result"
+}
+
+# Обновление кеша для одного файла (после сохранения прогресса)
+update_cache_for_file() {
+    local filename="$1"
+    local percent="$2"
+    PLAYBACK_PERCENT_CACHE["$filename"]="$percent"
+}
+
+# Очистка кеша
+clear_playback_cache() {
+    PLAYBACK_PERCENT_CACHE=()
+}
+
+# ============================================================================
+# ФУНКЦИИ ОТСЛЕЖИВАНИЯ ВИДЕО
+# ============================================================================
 
 # DEPRECATED: Эта функция больше не используется, оставлена для обратной совместимости
 # TODO: Удалить в следующей версии
@@ -108,24 +154,18 @@ get_playback_file() {
 load_progress() {
     local dir="$1"
     local filename="$2"
-    local playback_file=$(get_playback_file "$dir")
     
-    if [ ! -f "$playback_file" ]; then
+    # Используем БД вместо файлов
+    local playback_data=$(db_get_playback "$filename")
+    
+    if [ -z "$playback_data" ]; then
         echo ""
         return 1
     fi
     
-    # Ищем строку с filename
-    local line=$(grep "^${filename}:" "$playback_file" 2>/dev/null)
-    
-    if [ -z "$line" ]; then
-        echo ""
-        return 1
-    fi
-    
-    # Формат: filename:seconds:total:percent:timestamp
-    # Возвращаем: seconds:total:percent
-    echo "$line" | cut -d: -f2-4
+    # Формат из БД: position|duration|percent|series_prefix|series_suffix
+    # Возвращаем: position:duration:percent (для совместимости)
+    echo "$playback_data" | cut -d'|' -f1-3 | tr '|' ':'
     return 0
 }
 
@@ -137,58 +177,38 @@ save_progress() {
     local seconds="$3"
     local total="$4"
     local percent="$5"
-    local playback_file=$(get_playback_file "$dir")
-    local timestamp=$(date +%s)
     
-    # Создаём временный файл
-    local temp_file="${playback_file}.tmp"
+    # Извлекаем series_prefix и series_suffix из имени файла
+    local series_prefix=$(extract_series_prefix "$filename")
+    local series_suffix=$(extract_series_suffix "$filename")
     
-    # Если .playback не существует - создаём новый
-    if [ ! -f "$playback_file" ]; then
-        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" > "$playback_file"
-        return 0
-    fi
+    # Сохраняем в БД
+    db_save_playback "$filename" "$seconds" "$total" "$percent" "$series_prefix" "$series_suffix"
     
-    # Обновляем существующую запись или добавляем новую
-    local found=0
-    while IFS= read -r line; do
-        if [[ "$line" == "${filename}:"* ]]; then
-            # Обновляем существующую запись
-            echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" >> "$temp_file"
-            found=1
-        else
-            echo "$line" >> "$temp_file"
-        fi
-    done < "$playback_file"
+    # DEBUG: Сохраняем timestamp в description для тестов
+    db_save_debug_info "$filename" "updated_at:$(date +%s)"
     
-    # Если не нашли - добавляем новую запись
-    if [ $found -eq 0 ]; then
-        echo "${filename}:${seconds}:${total}:${percent}:${timestamp}" >> "$temp_file"
-    fi
+    # Обновляем кеш
+    update_cache_for_file "$filename" "$percent"
     
-    # Заменяем файл
-    mv "$temp_file" "$playback_file"
     return 0
 }
 
 # Возвращает иконку статуса для файла
 # Использование: get_status_icon "/path/to/dir" "filename"
-# Возвращает: "[ ]" "[T]" или "[X]"
+# Получение иконки статуса для отображения в меню
+# Использует кеш если доступен, иначе запрашивает из БД
 get_status_icon() {
     local dir="$1"
     local filename="$2"
     
-    # Загружаем прогресс
-    local progress=$(load_progress "$dir" "$filename")
+    # Пробуем получить из кеша
+    local percent="${PLAYBACK_PERCENT_CACHE[$filename]}"
     
-    if [ -z "$progress" ]; then
-        # Нет прогресса - не просмотрено
-        echo "[ ]"
-        return 0
+    # Если нет в кеше - запрашиваем из БД
+    if [ -z "$percent" ]; then
+        percent=$(db_get_playback_percent "$filename")
     fi
-    
-    # Извлекаем процент
-    local percent=$(echo "$progress" | cut -d: -f3)
     
     # Определяем иконку по порогам
     if [ "$percent" -ge "$WATCHED_THRESHOLD" ]; then
