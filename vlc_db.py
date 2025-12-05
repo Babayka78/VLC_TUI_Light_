@@ -3,8 +3,8 @@
 
 """
 vlc_db.py - Библиотека для безопасной работы с SQLite БД
-Версия: 1.0.0
-Дата: 02.12.2025
+Версия: 1.2.0
+Дата: 04.12.2025
 
 Защита от SQL Injection через параметризованные запросы.
 CLI интерфейс для вызова из bash скриптов.
@@ -59,9 +59,18 @@ class VlcDatabase:
                     status TEXT DEFAULT NULL,
                     series_prefix TEXT DEFAULT NULL,
                     series_suffix TEXT DEFAULT NULL,
-                    description TEXT DEFAULT NULL
+                    description TEXT DEFAULT NULL,
+                    outro_triggered INTEGER DEFAULT 0
                 )
             """)
+            
+            # Миграция: добавить outro_triggered если колонки нет
+            try:
+                self.cursor.execute("SELECT outro_triggered FROM playback LIMIT 1")
+            except sqlite3.OperationalError:
+                self.cursor.execute("""
+                    ALTER TABLE playback ADD COLUMN outro_triggered INTEGER DEFAULT 0
+                """)
             
             # Таблица настроек сериалов
             self.cursor.execute("""
@@ -73,11 +82,31 @@ class VlcDatabase:
                     skip_outro BOOLEAN DEFAULT 0,
                     intro_start INTEGER DEFAULT NULL,
                     intro_end INTEGER DEFAULT NULL,
-                    outro_start INTEGER DEFAULT NULL,
+                    credits_duration INTEGER DEFAULT NULL,
                     description TEXT DEFAULT NULL,
                     PRIMARY KEY (series_prefix, series_suffix)
                 )
             """)
+            
+            # Миграция: переименовать outro_start → credits_duration если нужно
+            try:
+                self.cursor.execute("SELECT credits_duration FROM series_settings LIMIT 1")
+            except sqlite3.OperationalError:
+                # Колонка credits_duration не существует
+                try:
+                    # Проверяем есть ли outro_start
+                    self.cursor.execute("SELECT outro_start FROM series_settings LIMIT 1")
+                    # Если есть - переименовываем (SQLite не поддерживает RENAME COLUMN до 3.25)
+                    # Создаём новую колонку и копируем данные
+                    self.cursor.execute("""
+                        ALTER TABLE series_settings ADD COLUMN credits_duration INTEGER DEFAULT NULL
+                    """)
+                    # Для существующих данных outro_start остаётся, но новые будут использовать credits_duration
+                except sqlite3.OperationalError:
+                    # outro_start тоже нет - просто добавляем credits_duration
+                    self.cursor.execute("""
+                        ALTER TABLE series_settings ADD COLUMN credits_duration INTEGER DEFAULT NULL
+                    """)
             
             self.conn.commit()
             return True
@@ -90,11 +119,11 @@ class VlcDatabase:
         """Вычисление статуса из процента просмотра
         
         Возвращает:
-            'watched' - 95-100%
-            'partial' - 1-94%
+            'watched' - 90-100%
+            'partial' - 1-89%
             None - 0%
         """
-        if percent >= 95:
+        if percent >= 90:
             return 'watched'
         elif percent >= 1:
             return 'partial'
@@ -216,17 +245,100 @@ class VlcDatabase:
             print(f"Ошибка пакетного получения статусов: {e}", file=sys.stderr)
             return {filename: '' for filename in filenames}
     
+    def get_outro_triggered(self, filename: str) -> int:
+        """Получение флага outro_triggered
+        
+        Возвращает: 0 или 1 (0 если нет записи)
+        """
+        try:
+            self.cursor.execute("""
+                SELECT outro_triggered FROM playback WHERE filename = ?
+            """, (filename,))
+            
+            result = self.cursor.fetchone()
+            return result[0] if result else 0
+        except sqlite3.Error as e:
+            print(f"Ошибка получения outro_triggered: {e}", file=sys.stderr)
+            return 0
+    
+    def set_outro_triggered(self, filename: str, triggered: int) -> bool:
+        """Установка флага outro_triggered (0 или 1)
+        
+        Создаёт запись если её нет
+        """
+        try:
+            self.cursor.execute("""
+                INSERT INTO playback (filename, outro_triggered)
+                VALUES (?, ?)
+                ON CONFLICT(filename) DO UPDATE SET
+                    outro_triggered = ?
+            """, (filename, triggered, triggered))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка установки outro_triggered: {e}", file=sys.stderr)
+            return False
+    
+    def get_credits_duration(self, series_prefix: str, series_suffix: str) -> Optional[int]:
+        """Получение длительности титров
+        
+        Возвращает: credits_duration в секундах (None если нет записи)
+        """
+        try:
+            self.cursor.execute("""
+                SELECT credits_duration FROM series_settings
+                WHERE series_prefix = ? AND series_suffix = ?
+            """, (series_prefix, series_suffix))
+            
+            result = self.cursor.fetchone()
+            return result[0] if result and result[0] is not None else None
+        except sqlite3.Error as e:
+            print(f"Ошибка получения credits_duration: {e}", file=sys.stderr)
+            return None
+    
+    def set_credits_duration(self, series_prefix: str, series_suffix: str, duration: int) -> bool:
+        """Установка длительности титров
+        
+        Создаёт запись если её нет или обновляет существующую
+        """
+        try:
+            if duration < 0:
+                print("ERROR: Отрицательная длительность недопустима", file=sys.stderr)
+                return False
+            
+            # Если записи нет - создаём с дефолтными значениями
+            if not self.series_settings_exist(series_prefix, series_suffix):
+                self.cursor.execute("""
+                    INSERT INTO series_settings 
+                    (series_prefix, series_suffix, autoplay, skip_intro, skip_outro, credits_duration)
+                    VALUES (?, ?, 0, 0, 0, ?)
+                """, (series_prefix, series_suffix, duration))
+            else:
+                # Обновляем только credits_duration
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET credits_duration = ?
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (duration, series_prefix, series_suffix))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка установки credits_duration: {e}", file=sys.stderr)
+            return False
+    
     def save_series_settings(self, series_prefix: str, series_suffix: str,
                             autoplay: bool, skip_intro: bool, skip_outro: bool,
                             intro_start: Optional[int] = None,
                             intro_end: Optional[int] = None,
-                            outro_start: Optional[int] = None) -> bool:
+                            credits_duration: Optional[int] = None) -> bool:
         """Сохранение настроек сериала (защита от SQL injection)"""
         try:
             self.cursor.execute("""
                 INSERT INTO series_settings 
                 (series_prefix, series_suffix, autoplay, skip_intro, skip_outro, 
-                 intro_start, intro_end, outro_start)
+                 intro_start, intro_end, credits_duration)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(series_prefix, series_suffix) DO UPDATE SET
                     autoplay = ?,
@@ -234,10 +346,10 @@ class VlcDatabase:
                     skip_outro = ?,
                     intro_start = ?,
                     intro_end = ?,
-                    outro_start = ?
+                    credits_duration = ?
             """, (series_prefix, series_suffix, autoplay, skip_intro, skip_outro,
-                  intro_start, intro_end, outro_start,
-                  autoplay, skip_intro, skip_outro, intro_start, intro_end, outro_start))
+                  intro_start, intro_end, credits_duration,
+                  autoplay, skip_intro, skip_outro, intro_start, intro_end, credits_duration))
             
             self.conn.commit()
             return True
@@ -248,14 +360,14 @@ class VlcDatabase:
     def get_series_settings(self, series_prefix: str, series_suffix: str) -> Optional[Tuple]:
         """Получение настроек сериала
         
-        Возвращает: (autoplay, skip_intro, skip_outro, intro_start, intro_end, outro_start)
+        Возвращает: (autoplay, skip_intro, skip_outro, intro_start, intro_end, credits_duration)
         """
         try:
             self.cursor.execute("""
                 SELECT autoplay, skip_intro, skip_outro,
                        COALESCE(intro_start, ''), 
                        COALESCE(intro_end, ''), 
-                       COALESCE(outro_start, '')
+                       COALESCE(credits_duration, '')
                 FROM series_settings
                 WHERE series_prefix = ? AND series_suffix = ?
             """, (series_prefix, series_suffix))
@@ -278,6 +390,140 @@ class VlcDatabase:
             return result[0] > 0 if result else False
         except sqlite3.Error as e:
             print(f"Ошибка проверки настроек: {e}", file=sys.stderr)
+            return False
+    
+    def get_skip_markers(self, series_prefix: str, series_suffix: str) -> Optional[Dict[str, Optional[int]]]:
+        """Получение skip markers для сериала
+        
+        Возвращает: dict {
+            'intro_start': int | None,
+            'intro_end': int | None,
+            'credits_duration': int | None  # Вместо outro_start
+        }
+        """
+        try:
+            self.cursor.execute("""
+                SELECT intro_start, intro_end, credits_duration
+                FROM series_settings
+                WHERE series_prefix = ? AND series_suffix = ?
+            """, (series_prefix, series_suffix))
+            
+            result = self.cursor.fetchone()
+            if result:
+                return {
+                    'intro_start': result[0],
+                    'intro_end': result[1],
+                    'credits_duration': result[2]  # Вместо outro_start
+                }
+            else:
+                return None
+        except sqlite3.Error as e:
+            print(f"Ошибка получения skip markers: {e}", file=sys.stderr)
+            return None
+    
+    def set_intro_markers(self, series_prefix: str, series_suffix: str, 
+                          start: int, end: int) -> bool:
+        """Установка маркеров intro (начало и конец)
+        
+        Обновляет только intro_start и intro_end, оставляя остальные настройки без изменений
+        """
+        try:
+            # Проверяем корректность значений
+            if start < 0 or end < 0:
+                print("ERROR: Отрицательные значения недопустимы", file=sys.stderr)
+                return False
+            
+            if end <= start:
+                print("ERROR: Конец intro должен быть больше начала", file=sys.stderr)
+                return False
+            
+            # Если записи нет - создаём с дефолтными значениями
+            if not self.series_settings_exist(series_prefix, series_suffix):
+                self.cursor.execute("""
+                    INSERT INTO series_settings 
+                    (series_prefix, series_suffix, autoplay, skip_intro, skip_outro, intro_start, intro_end)
+                    VALUES (?, ?, 0, 0, 0, ?, ?)
+                """, (series_prefix, series_suffix, start, end))
+            else:
+                # Обновляем только intro markers
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET intro_start = ?, intro_end = ?
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (start, end, series_prefix, series_suffix))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка установки intro markers: {e}", file=sys.stderr)
+            return False
+    
+    def set_outro_marker(self, series_prefix: str, series_suffix: str, start: int) -> bool:
+        """Установка маркера outro (только начало)
+        
+        Обновляет только outro_start, оставляя остальные настройки без изменений
+        """
+        try:
+            # Проверяем корректность значений
+            if start < 0:
+                print("ERROR: Отрицательные значения недопустимы", file=sys.stderr)
+                return False
+            
+            # Если записи нет - создаём с дефолтными значениями
+            if not self.series_settings_exist(series_prefix, series_suffix):
+                self.cursor.execute("""
+                    INSERT INTO series_settings 
+                    (series_prefix, series_suffix, autoplay, skip_intro, skip_outro, outro_start)
+                    VALUES (?, ?, 0, 0, 0, ?)
+                """, (series_prefix, series_suffix, start))
+            else:
+                # Обновляем только outro marker
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET outro_start = ?
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (start, series_prefix, series_suffix))
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка установки outro marker: {e}", file=sys.stderr)
+            return False
+    
+    def clear_skip_markers(self, series_prefix: str, series_suffix: str, 
+                          marker_type: str = 'all') -> bool:
+        """Очистка skip markers
+        
+        Args:
+            marker_type: 'intro', 'outro', или 'all'
+        """
+        try:
+            if marker_type == 'intro':
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET intro_start = NULL, intro_end = NULL
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (series_prefix, series_suffix))
+            elif marker_type == 'outro':
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET outro_start = NULL
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (series_prefix, series_suffix))
+            elif marker_type == 'all':
+                self.cursor.execute("""
+                    UPDATE series_settings 
+                    SET intro_start = NULL, intro_end = NULL, outro_start = NULL
+                    WHERE series_prefix = ? AND series_suffix = ?
+                """, (series_prefix, series_suffix))
+            else:
+                print(f"ERROR: Неизвестный тип маркера '{marker_type}'", file=sys.stderr)
+                return False
+            
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"Ошибка очистки skip markers: {e}", file=sys.stderr)
             return False
     
     def find_other_versions(self, series_prefix: str, current_suffix: str) -> List[Tuple[str, str, int]]:
@@ -489,7 +735,7 @@ def cli_get_series_settings(args: List[str]):
     """CLI: Получение настроек сериала
     
     Аргументы: series_prefix series_suffix
-    Вывод: autoplay|skip_intro|skip_outro|intro_start|intro_end|outro_start
+    Вывод: autoplay|skip_intro|skip_outro|intro_start|intro_end|credits_duration
     """
     if len(args) < 2:
         print("ERROR: Укажите series_prefix и series_suffix", file=sys.stderr)
@@ -566,6 +812,162 @@ def cli_get_playback_batch(args: List[str]):
         return 0
 
 
+def cli_get_skip_markers(args: List[str]):
+    """CLI: Получение skip markers
+    
+    Аргументы: series_prefix series_suffix
+    Вывод: JSON {intro_start, intro_end, outro_start}
+    """
+    if len(args) < 2:
+        print("ERROR: Укажите series_prefix и series_suffix", file=sys.stderr)
+        return 1
+    
+    series_prefix = args[0]
+    series_suffix = args[1]
+    
+    with VlcDatabase() as db:
+        result = db.get_skip_markers(series_prefix, series_suffix)
+        if result:
+            print(json.dumps(result))
+            return 0
+        else:
+            return 1
+
+
+def cli_set_intro(args: List[str]):
+    """CLI: Установка intro markers
+    
+    Аргументы: series_prefix series_suffix start end
+    """
+    if len(args) < 4:
+        print("ERROR: Недостаточно аргументов (series_prefix series_suffix start end)", file=sys.stderr)
+        return 1
+    
+    series_prefix = args[0]
+    series_suffix = args[1]
+    
+    try:
+        start = int(args[2])
+        end = int(args[3])
+    except ValueError:
+        print("ERROR: start и end должны быть числами", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        success = db.set_intro_markers(series_prefix, series_suffix, start, end)
+        print("OK" if success else "ERROR")
+        return 0 if success else 1
+
+
+def cli_set_outro(args: List[str]):
+    """CLI: Установка outro marker
+    
+    Аргументы: series_prefix series_suffix start
+    """
+    if len(args) < 3:
+        print("ERROR: Недостаточно аргументов (series_prefix series_suffix start)", file=sys.stderr)
+        return 1
+    
+    series_prefix = args[0]
+    series_suffix = args[1]
+    
+    try:
+        start = int(args[2])
+    except ValueError:
+        print("ERROR: start должен быть числом", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        success = db.set_outro_marker(series_prefix, series_suffix, start)
+        print("OK" if success else "ERROR")
+        return 0 if success else 1
+
+
+def cli_clear_skip(args: List[str]):
+    """CLI: Очистка skip markers
+    
+    Аргументы: series_prefix series_suffix [marker_type]
+    marker_type: intro, outro, all (по умолчанию all)
+    """
+    if len(args) < 2:
+        print("ERROR: Недостаточно аргументов (series_prefix series_suffix [marker_type])", file=sys.stderr)
+        return 1
+    
+    series_prefix = args[0]
+    series_suffix = args[1]
+    marker_type = args[2] if len(args) > 2 else 'all'
+    
+    with VlcDatabase() as db:
+        success = db.clear_skip_markers(series_prefix, series_suffix, marker_type)
+        print("OK" if success else "ERROR")
+        return 0 if success else 1
+
+
+def cli_get_outro_triggered(args: List[str]):
+    """Получение outro_triggered флага"""
+    if len(args) < 1:
+        print("ERROR: Укажите filename", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        triggered = db.get_outro_triggered(args[0])
+        print(triggered)
+        return 0
+
+
+def cli_set_outro_triggered(args: List[str]):
+    """Установка outro_triggered флага"""
+    if len(args) < 2:
+        print("ERROR: Укажите filename и triggered (0/1)", file=sys.stderr)
+        return 1
+    
+    try:
+        triggered = int(args[1])
+        if triggered not in [0, 1]:
+            raise ValueError
+    except ValueError:
+        print("ERROR: triggered должен быть 0 или 1", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        success = db.set_outro_triggered(args[0], triggered)
+        print("OK" if success else "ERROR")
+        return 0 if success else 1
+
+
+def cli_get_credits_duration(args: List[str]):
+    """Получение credits_duration"""
+    if len(args) < 2:
+        print("ERROR: Укажите series_prefix и series_suffix", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        duration = db.get_credits_duration(args[0], args[1])
+        if duration is not None:
+            print(duration)
+            return 0
+        else:
+            return 1
+
+
+def cli_set_credits_duration(args: List[str]):
+    """Установка credits_duration"""
+    if len(args) < 3:
+        print("ERROR: Укажите series_prefix series_suffix duration", file=sys.stderr)
+        return 1
+    
+    try:
+        duration = int(args[2])
+    except ValueError:
+        print("ERROR: duration должен быть числом", file=sys.stderr)
+        return 1
+    
+    with VlcDatabase() as db:
+        success = db.set_credits_duration(args[0], args[1], duration)
+        print("OK" if success else "ERROR")
+        return 0 if success else 1
+
+
 def print_usage():
     """Вывод справки по использованию"""
     print("""
@@ -583,6 +985,10 @@ def print_usage():
   get_settings <prefix> <suffix>          - Получить настройки
   settings_exist <prefix> <suffix>        - Проверить настройки
   find_versions <prefix> <suffix>         - Найти другие версии
+  get-skip-markers <prefix> <suffix>      - Получить skip markers (JSON)
+  set-intro <prefix> <suffix> <start> <end> - Установить intro markers
+  set-outro <prefix> <suffix> <start>     - Установить outro marker
+  clear-skip <prefix> <suffix> [type]     - Очистить markers (intro/outro/all)
 
 Примеры:
   vlc_db.py init
@@ -590,6 +996,10 @@ def print_usage():
   vlc_db.py get_playback "video.mkv"
   vlc_db.py get_percent "video.mkv"
   vlc_db.py get_batch "/path/to/dir" "video1.mkv" "video2.mkv" "video3.mkv"
+  vlc_db.py get-skip-markers "Euphoria" "S02"
+  vlc_db.py set-intro "Euphoria" "S02" 30 90
+  vlc_db.py set-outro "Euphoria" "S02" 3300
+  vlc_db.py clear-skip "Euphoria" "S02" intro
 """)
 
 
@@ -614,6 +1024,14 @@ def main():
         'get_settings': lambda: cli_get_series_settings(args),
         'settings_exist': lambda: cli_series_settings_exist(args),
         'find_versions': lambda: cli_find_other_versions(args),
+        'get-skip-markers': lambda: cli_get_skip_markers(args),
+        'set-intro': lambda: cli_set_intro(args),
+        'set-outro': lambda: cli_set_outro(args),
+        'clear-skip': lambda: cli_clear_skip(args),
+        'get-outro-triggered': lambda: cli_get_outro_triggered(args),
+        'set-outro-triggered': lambda: cli_set_outro_triggered(args),
+        'get-credits-duration': lambda: cli_get_credits_duration(args),
+        'set-credits-duration': lambda: cli_set_credits_duration(args),
     }
     
     if command in commands:

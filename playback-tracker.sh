@@ -1,11 +1,12 @@
 #!/bin/bash
 # playback-tracker.sh - Библиотека отслеживания прогресса воспроизведения
-# Версия: 0.3.1
+# Версия: 0.4.0
 # Changelog:
 #   0.1.0 - Первая версия
 #   0.2.0 - Добавлен автомониторинг VLC (29.11.2025)
 #   0.3.0 - Переход на SQLite БД (29.11.2025)
 #   0.3.1 - Добавлено кеширование процентов (02.12.2025)
+#   0.4.0 - Threshold 90%, basename consistency, защита от перезаписи (05.12.2025)
 #
 # Использование: source "$SCRIPT_DIR/playback-tracker.sh"
 
@@ -46,7 +47,7 @@ check_version_compatibility() {
 SERIES_PATTERN='S[0-9][0-9][-_. ]*E[0-9][0-9]'
 
 # Пороги процентов просмотра
-WATCHED_THRESHOLD=95     # Процент для [X] - просмотрено (начало титров)
+WATCHED_THRESHOLD=90     # Процент для [X] - просмотрено (до начала титров)
 PARTIAL_THRESHOLD=1      # Минимальный процент для [T] - частично
 
 # Интервал мониторинга в секундах
@@ -178,6 +179,12 @@ save_progress() {
     local total="$4"
     local percent="$5"
     
+    # Проверяем: если outro уже сработал (100%), НЕ перезаписываем меньшим процентом
+    if [ -n "${OUTRO_TRIGGERED:-}" ] && [ "$OUTRO_TRIGGERED" -eq 1 ]; then
+        # Outro уже установил 100%, не перезаписываем
+        return 0
+    fi
+    
     # Извлекаем series_prefix и series_suffix из имени файла
     local series_prefix=$(extract_series_prefix "$filename")
     local series_suffix=$(extract_series_suffix "$filename")
@@ -246,13 +253,13 @@ get_progress_percent() {
 # ============================================================
 
 # Мониторинг прогресса воспроизведения VLC в фоне
-# Использование: monitor_vlc_playback "/path/to/video.avi" VLC_PID
+# Использование: monitor_vlc_playback "video_basename.mkv" VLC_PID
 # Возвращает: PID процесса мониторинга
+# 
+# ВАЖНО: Принимает basename файла (не полный путь) для консистентности с БД
 monitor_vlc_playback() {
-    local video_file="$1"
+    local filename="$1"  # Basename файла
     local vlc_pid="$2"
-    local video_dir=$(dirname "$video_file")
-    local video_name=$(basename "$video_file")
     
     (
         while true; do
@@ -270,7 +277,8 @@ monitor_vlc_playback() {
             # Если получили данные - сохраняем
             if [ -n "$current" ] && [ -n "$total" ] && [ "$total" -gt 0 ]; then
                 local percent=$((current * 100 / total))
-                save_progress "$video_dir" "$video_name" "$current" "$total" "$percent"
+                # Передаём пустую строку для dir (не используется), filename уже basename
+                save_progress "" "$filename" "$current" "$total" "$percent"
             fi
         done
     ) &
@@ -279,11 +287,17 @@ monitor_vlc_playback() {
 }
 
 # Финальное сохранение позиции при выходе
-# Использование: finalize_playback "/path/to/video.avi"
+# Использование: finalize_playback "video_basename.mkv"
+# 
+# ВАЖНО: Принимает basename файла (не полный путь) для консистентности с БД
 finalize_playback() {
-    local video_file="$1"
-    local video_dir=$(dirname "$video_file")
-    local video_name=$(basename "$video_file")
+    local filename="$1"  # Basename файла
+    
+    # Проверяем: если outro уже сработал, НЕ перезаписываем 100%
+    if [ -n "${OUTRO_TRIGGERED:-}" ] && [ "$OUTRO_TRIGGERED" -eq 1 ]; then
+        echo "✓ Outro уже сработал - финальное сохранение пропущено"
+        return 0
+    fi
     
     # Получаем позицию (timeout 2 сек - дольше т.к. это финальное)
     local current=$(echo "get_time" | nc -w 2 localhost 4212 2>&1 | grep -oE '[0-9]+' | tail -1)
@@ -291,7 +305,8 @@ finalize_playback() {
     
     if [ -n "$current" ] && [ -n "$total" ] && [ "$total" -gt 0 ]; then
         local percent=$((current * 100 / total))
-        save_progress "$video_dir" "$video_name" "$current" "$total" "$percent"
+        # Передаём пустую строку для dir (не используется), filename уже basename
+        save_progress "" "$filename" "$current" "$total" "$percent"
         return 0
     fi
     

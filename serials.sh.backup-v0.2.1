@@ -1,13 +1,12 @@
 #!/bin/bash
 
 # serials.sh - Библиотека для управления настройками сериалов
-# Версия: 0.3.0
+# Версия: 0.2.1
 # Дата: 04.12.2025
 # Changelog:
 #   0.1.0 - Первая версия (файловое хранение)
 #   0.2.0 - Переход на SQLite БД с композитным ключом
 #   0.2.1 - Исправлен баг: Cancel/ESC теперь не сохраняют изменения в БД
-#   0.3.0 - Добавлено редактирование skip marker времён через двухшаговый UI
 
 # Подключаем БД библиотеку
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,151 +69,40 @@ mmss_to_seconds() {
     echo $((minutes * 60 + seconds))
 }
 
-# Функция для редактирования времён skip markers
-# Параметры: $1 - intro_start (секунды), $2 - intro_end (секунды), $3 - outro_start (секунды)
-# Возвращает: через stdout строку "intro_start|intro_end|outro_start" в секундах, или пустую строку при Cancel
-show_time_editor_dialog() {
-    local intro_start_sec="$1"
-    local intro_end_sec="$2"
-    local outro_start_sec="$3"
-    
-    # Конвертируем секунды в MM:SS для отображения
-    local intro_start_mm=$(seconds_to_mmss "$intro_start_sec")
-    local intro_end_mm=$(seconds_to_mmss "$intro_end_sec")
-    local outro_start_mm=$(seconds_to_mmss "$outro_start_sec")
-    
-    # Если пустые значения - поставим 00:00 как placeholder
-    [ -z "$intro_start_mm" ] && intro_start_mm="00:00"
-    [ -z "$intro_end_mm" ] && intro_end_mm="00:00"
-    [ -z "$outro_start_mm" ] && outro_start_mm="00:00"
-    
-    # Восстанавливаем TTY
-    exec < /dev/tty
-    exec > /dev/tty
-    
-    # Настройка цветовой схемы для полей ввода
-    local dialogrc_file="/tmp/dialogrc_$$"
-    export DIALOGRC="$dialogrc_file"
-    
-    cat > "$dialogrc_file" << 'EOF'
-use_colors = ON
-form_active_text_color = (WHITE,BLUE,ON)
-form_text_color = (BLACK,WHITE,OFF)
-EOF
-    
-    # Временный файл для результата
-    local tmpfile=$(mktemp)
-    
-    # Показываем form dialog
-    dialog --output-fd 3 \
-        --title "Редактирование времён (MM:SS)" \
-        --form "Введите времена в формате ММ:СС\n(пустое поле = отключено)" 13 50 3 \
-        "Intro Start:" 1 1 "$intro_start_mm" 1 18 10 10 \
-        "Intro End:"   2 1 "$intro_end_mm"   2 18 10 10 \
-        "Outro Start:" 3 1 "$outro_start_mm" 3 18 10 10 \
-        3>"$tmpfile" 2>/dev/tty
-    
-    local exit_code=$?
-    
-    # Читаем результат (3 строки)
-    local result=$(cat "$tmpfile")
-    rm -f "$tmpfile"
-    rm -f "$dialogrc_file"
-    unset DIALOGRC
-    
-    # Если Cancel/ESC - возвращаем пустую строку
-    if [ $exit_code -ne 0 ]; then
-        echo ""
-        return 1
-    fi
-    
-    # Парсим результат (каждое поле на отдельной строке)
-    local line_num=0
-    local new_intro_start=""
-    local new_intro_end=""
-    local new_outro_start=""
-    
-    while IFS= read -r line; do
-        line_num=$((line_num + 1))
-        
-        # Пропускаем пустые строки и "00:00"
-        if [ -z "$line" ] || [ "$line" = "00:00" ]; then
-            continue
-        fi
-        
-        # Валидация формата MM:SS
-        if [[ ! "$line" =~ ^[0-9]+:[0-9]{2}$ ]]; then
-            dialog --msgbox "Ошибка: '$line' не соответствует формату MM:SS" 7 50
-            echo ""
-            return 1
-        fi
-        
-        # Конвертируем в секунды
-        local seconds=$(mmss_to_seconds "$line")
-        
-        case $line_num in
-            1) new_intro_start="$seconds" ;;
-            2) new_intro_end="$seconds" ;;
-            3) new_outro_start="$seconds" ;;
-        esac
-    done <<< "$result"
-    
-    # Дополнительная валидация: intro_end должен быть больше intro_start
-    if [ -n "$new_intro_start" ] && [ -n "$new_intro_end" ]; then
-        if [ "$new_intro_end" -le "$new_intro_start" ]; then
-            dialog --msgbox "Ошибка: Intro End должен быть больше Intro Start" 7 50
-            echo ""
-            return 1
-        fi
-    fi
-    
-    # Возвращаем результат (через stdout для capture, но не на экран)
-    echo "${new_intro_start}|${new_intro_end}|${new_outro_start}" >&1
-    return 0
-}
-
-
 # Функция для сохранения настроек в БД (вызывается только при OK)
 save_settings_to_db() {
     local current_dir="$1"
     local filename="$2"
     local series_prefix="$3"
     local series_suffix="$4"
-    local selected="$5"       # Строка с выбранными чекбоксами
-    local intro_start="${6:-}"
-    local intro_end="${7:-}"
-    local credits_duration="${8:-}"
+    local selected="$5"
     
-    rotate_log_if_needed  # Ротация лога если нужно
-    
-    # Парсим selected
-    local auto=0; local intro=0; local outro=0
-    echo "$selected" | grep -q "autoplay" && auto=1
-    echo "$selected" | grep -q "skip_intro" && intro=1
-    echo "$selected" | grep -q "skip_outro" && outro=1
-    
-    # Конвертация пустых строк в NULL для БД
-    [ -z "$intro_start" ] && intro_start=""
-    [ -z "$intro_end" ] && intro_end=""
-    [ -z "$credits_duration" ] && credits_duration=""
+    # Ротация лога
+    rotate_log_if_needed
     
     # Логирование
-    echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG_FILE"
-    echo "Сохранение: $series_prefix / $series_suffix" >> "$LOG_FILE"
-    echo "  Флаги: auto=$auto intro=$intro outro=$outro" >> "$LOG_FILE"
-    echo "  Времена: intro_start=$intro_start intro_end=$intro_end credits_duration=$credits_duration" >> "$LOG_FILE"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] === Сохранение настроек ===" >> "$LOG_FILE"
+    echo "  Директория: $current_dir" >> "$LOG_FILE"
+    echo "  Файл: $filename" >> "$LOG_FILE"
+    echo "  Series prefix: $series_prefix" >> "$LOG_FILE"
+    echo "  Series suffix: $series_suffix" >> "$LOG_FILE"
+    echo "  Выбранные опции: $selected" >> "$LOG_FILE"
     
-    # Сохранение в БД
-    db_save_series_settings "$series_prefix" "$series_suffix" $auto $intro $outro "$intro_start" "$intro_end" "$credits_duration" >> "$LOG_FILE" 2>&1
+    # Конвертируем выбранные опции в 0/1
+    local auto=0; echo "$selected" | grep -q "autoplay" && auto=1
+    local intro=0; echo "$selected" | grep -q "skip_intro" && intro=1
+    local outro=0; echo "$selected" | grep -q "skip_outro" && outro=1
     
-    if [ $? -eq 0 ]; then
-        echo "ОК: сохранено" >> "$LOG_FILE"
-        return 0
-    else
-        echo "ERROR: ошибка сохранения" >> "$LOG_FILE"
-        return 1
-    fi
+    echo "  Значения: auto=$auto intro=$intro outro=$outro" >> "$LOG_FILE"
+    
+    # Сохраняем в БД
+    db_save_series_settings "$series_prefix" "$series_suffix" $auto $intro $outro >> "$LOG_FILE" 2>&1
+    
+    local save_result=$?
+    echo "  Результат сохранения: $save_result" >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
 }
+
 # Функция для отображения меню настроек сериалов
 # Параметры:
 #   $1 - текущая директория (для поиска видеофайлов)
@@ -242,30 +130,26 @@ show_series_settings() {
     # Загружаем настройки из БД
     local settings=$(db_get_series_settings "$series_prefix" "$series_suffix")
     
-    # Парсим: autoplay|skip_intro|skip_outro|intro_start|intro_end|credits_duration
-    local auto="0"
-    local intro="0"
-    local outro="0"
-    local intro_start=""
-    local intro_end=""
-    local credits_duration=""
+    # Парсим: autoplay|skip_intro|skip_outro|intro_start|intro_end|outro_start
+    local autoplay="off"
+    local skip_intro="off"
+    local skip_outro="off"
     
     if [ -n "$settings" ]; then
-        IFS='|' read -r auto intro outro intro_start intro_end credits_duration <<< "$settings"
+        IFS='|' read -r auto intro outro intro_start intro_end outro_start <<< "$settings"
+        [ "$auto" == "1" ] && autoplay="on"
+        [ "$intro" == "1" ] && skip_intro="on"
+        [ "$outro" == "1" ] && skip_outro="on"
     fi
-    
-    # Преобразуем 0/1 в on/off для dialog
-    local autoplay="off"; [ "$auto" == "1" ] && autoplay="on"
-    local skip_intro="off"; [ "$intro" == "1" ] && skip_intro="on"
-    local skip_outro="off"; [ "$outro" == "1" ] && skip_outro="on"
     
     # Восстанавливаем TTY
     exec < /dev/tty
     exec > /dev/tty
     
-    # ШАГ 1: Показываем checklist для булевых опций
+    # Используем временный файл для корректной обработки exit code
     local tmpfile=$(mktemp)
     
+    # Показываем checklist и сохраняем результат во временный файл
     dialog --output-fd 3 \
         --title "Настройки: $series_prefix" \
         --checklist "Выберите опции (SPACE для выбора):" 12 60 3 \
@@ -283,30 +167,8 @@ show_series_settings() {
         return 0
     fi
     
-    # ШАГ 2: Времена НЕ затираются - используются значения загруженные из БД выше
-    # Времена устанавливаются через RED кнопку в vlc-cec.sh
-    # Здесь мы только меняем флаги skip_intro/skip_outro, времена остаются без изменений
-    
-    # ЗАКОММЕНТИРОВАНО: автоматический вызов редактора времён
-    # local show_time_editor=0
-    # echo "$selected" | grep -q "skip_intro" && show_time_editor=1
-    # echo "$selected" | grep -q "skip_outro" && show_time_editor=1
-    # 
-    # if [ $show_time_editor -eq 1 ]; then
-    #     local time_result=$(show_time_editor_dialog "$intro_start" "$intro_end" "$outro_start")
-    #     clear
-    #     if [ -z "$time_result" ]; then
-    #         return 0
-    #     fi
-    #     IFS='|' read -r intro_start intro_end outro_start <<< "$time_result"
-    # else
-    #     intro_start=""
-    #     intro_end=""
-    #     outro_start=""
-    # fi
-    
-    # Сохраняем всё в БД (флаги + сохранённые времена)
-    save_settings_to_db "$current_dir" "$filename" "$series_prefix" "$series_suffix" "$selected" "$intro_start" "$intro_end" "$credits_duration"
+    # Если OK (exit_code=0) - сохраняем
+    save_settings_to_db "$current_dir" "$filename" "$series_prefix" "$series_suffix" "$selected"
 }
 
 # Функция для получения компактной строки статуса для подзаголовка
@@ -341,10 +203,10 @@ get_settings_status_compact() {
     local skip_outro="0"
     local intro_start=""
     local intro_end=""
-    local credits_duration=""
+    local outro_start=""
     
     if [ -n "$settings" ]; then
-        IFS='|' read -r autoplay skip_intro skip_outro intro_start intro_end credits_duration <<< "$settings"
+        IFS='|' read -r autoplay skip_intro skip_outro intro_start intro_end outro_start <<< "$settings"
     fi
     
     # Формируем иконки
@@ -354,7 +216,7 @@ get_settings_status_compact() {
     
     # Формируем строку с временами
     local intro_times=""
-    local credits_time=""
+    local outro_time=""
     
     # Intro: если есть хотя бы одно значение
     if [ -n "$intro_start" ] || [ -n "$intro_end" ]; then
@@ -363,13 +225,13 @@ get_settings_status_compact() {
         intro_times=": ${start_mm}-${end_mm}"
     fi
     
-    # Credits: если есть значение
-    if [ -n "$credits_duration" ]; then
-        local credits_mm=$(seconds_to_mmss "$credits_duration")
-        credits_time=": ${credits_mm}"
+    # Outro: если есть значение
+    if [ -n "$outro_start" ]; then
+        local outro_mm=$(seconds_to_mmss "$outro_start")
+        outro_time=": ${outro_mm}"
     fi
     
-    echo "[$auto_icon] Auto  [$intro_icon] Intro${intro_times}  [$outro_icon] Outro${credits_time}"
+    echo "[$auto_icon] Auto  [$intro_icon] Intro${intro_times}  [$outro_icon] Outro${outro_time}"
 }
 
 # Функция для получения значения настройки (для использования в других скриптах)

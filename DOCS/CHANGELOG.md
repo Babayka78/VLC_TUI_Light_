@@ -6,6 +6,162 @@
 
 ---
 
+## [0.7.0] - 2025-12-05 - Outro Pause with Skip Settings
+
+### Fixed
+- **КРИТИЧНО: Дублирование записей в БД `playback`** 
+  - До: Для одного видео создавались две записи - с basename и с полным путём
+  - Причина: `vlc-cec.sh` передавал `$VIDEO_FILE` (полный путь) в `monitor_vlc_playback()` и `finalize_playback()`
+  - `playback-tracker.sh` внутренне делал `basename`, но это приводило к inconsistency
+  - После: `vlc-cec.sh` теперь передаёт `$VIDEO_BASENAME` во все функции трекинга
+  - `playback-tracker.sh` принимает basename напрямую без внутренней конвертации
+  - Все операции с БД теперь консистентно используют basename как primary key
+  
+- **Skip Intro не работал** 
+  - До: `get_skip_markers()` в `vlc_db.py` запрашивал несуществующее поле `outro_start`
+  - После: Исправлено на `credits_duration` в соответствии с новой схемой БД
+  - Функция теперь возвращает `{'intro_start', 'intro_end', 'credits_duration'}`
+
+- **Skip Intro/Outro срабатывали независимо от настроек**
+  - До: `monitor_skip_markers()` проверял только наличие маркеров, игнорируя флаги `skip_intro`/`skip_outro`
+  - После: Добавлены проверки `SKIP_INTRO_ENABLED` и `SKIP_OUTRO_ENABLED` перед срабатыванием
+  - `load_skip_markers()` теперь загружает настройки через `db_get_series_settings()`
+  - Визуальная индикация: `✓ Intro: 5s - 57s (skip: ON/OFF)`
+
+- **Коррекция outro времени: +5 вместо -5**
+  - До: `credits_duration = total_length - current_time + REACTION_DELAY`
+  - После: `credits_duration = total_length - current_time - REACTION_DELAY`
+  - Титры теперь корректно начинаются на 5 секунд раньше чем нажата RED кнопка
+
+- **Статус [X] не отображался после outro pause**
+  - До: `finalize_playback()` перезаписывал 100% (установленное outro) на реальную позицию ~94%
+  - Причина: Фоновый `monitor_vlc_playback()` продолжал сохранять каждые 60 секунд
+  - После: Добавлена проверка `OUTRO_TRIGGERED` в `save_progress()` и `finalize_playback()`
+  - Если outro сработал, последующие сохранения игнорируются
+
+- **КРИТИЧНО:** serials.sh затирал времена при сохранении флагов
+  - До: При включении Skip Intro/Outro времена сбрасывались в NULL
+  - После: Времена сохраняются из БД, затираются только флаги
+  
+- vlc-cec.sh: Порядок проверок в monitor loop (intro → outro → end-of-video)
+
+### Added
+- **vlc_db.py**: Новая логика для outro
+  - Колонка `credits_duration INTEGER` в `series_settings` (вместо `outro_start`)
+  - Колонка `outro_triggered INTEGER` в `playback` для persistent флага
+  - Методы: `get/set_credits_duration()`, `get/set_outro_triggered()`
+  - CLI команды: `get-credits-duration`, `set-credits-duration`, `get-outro-triggered`, `set-outro-triggered`
+
+- **vlc-cec.sh**: Динамический расчёт outro
+  - Загрузка `CREDITS_DURATION` из БД при старте
+  - Динамический расчёт: `outro_start = video_duration - credits_duration`
+  - Persistent флаг `outro_triggered` сохраняется в БД между сессиями
+  - Автоматический сброс флага при перемотке назад через `outro_start`
+  - **RED кнопка:** 5-секундная коррекция времени при установке маркеров
+  - **RED кнопка в конце видео (>80%):** автоматический расчёт credits_duration
+
+### Changed
+- **Порог watched снижен с 95% до 90%**
+  - `vlc_db.py`: `_calculate_status()` теперь `percent >= 90` → `'watched'`
+  - `playback-tracker.sh`: `WATCHED_THRESHOLD=90`
+  - Причина: После 90% обычно начинаются финальные титры
+  - Решает проблему: видео оставались [T] даже после просмотра до титров
+
+- **vlc-cec.sh**: Outro теперь ставит на **pause** вместо exit
+- **vlc-cec.sh**: При срабатывании outro видео автоматически маркируется как [X]
+- **vlc-cec.sh**: Проверка окончания видео перенесена ПОСЛЕ outro check (приоритет outro)
+- **serials.sh**: `get_settings_status_compact()` использует `credits_duration` вместо `outro_start`
+- **serials.sh**: Время intro/outro отображается в меню
+- **Логи:** Сокращены сообщения ("✓ Intro: 5s-57s" вместо "✓ Загружены intro markers...")
+
+### Technical
+- Все изменения протестированы с House of Guinness S01 (3171-3327 секунд)
+- Проверена работа с чистой БД и миграция существующих записей
+- Синтаксис проверен: `bash -n vlc-cec.sh playback-tracker.sh`
+- Python синтаксис: `python3 -m py_compile vlc_db.py`
+
+### Files Modified
+- `vlc-cec.sh` - передача basename, проверка skip флагов, cache update
+- `playback-tracker.sh` - приём basename, защита от перезаписи, threshold 90%
+- `vlc_db.py` - credits_duration, outro_triggered, get_skip_markers fix, threshold 90%
+- `serials.sh` - исправлено затирание времён
+
+### Testing
+- ✅ Динамический расчёт outro работает (House of Guinness: credits 213-240s)
+- ✅ Outro pause срабатывает корректно при skip_outro=ON
+- ✅ Outro НЕ срабатывает при skip_outro=OFF
+- ✅ Skip intro работает при skip_intro=ON
+- ✅ Skip intro НЕ работает при skip_intro=OFF
+- ✅ Сброс флага при перемотке работает
+- ✅ RED кнопка устанавливает маркеры с коррекцией -5s
+- ✅ Времена НЕ затираются при сохранении флагов
+- ✅ Статус [X] отображается после outro
+- ✅ Статус [X] отображается при 90%+ просмотра
+- ✅ Нет дубликатов в БД (только basename)
+
+### Technical
+- Миграция БД: `ALTER TABLE series_settings ADD COLUMN credits_duration`
+- Миграция БД: `ALTER TABLE playback ADD COLUMN outro_triggered`
+- Добавлена переменная `VIDEO_BASENAME` в vlc-cec.sh
+- Синтаксис проверен: `bash -n vlc-cec.sh playback-tracker.sh`
+- Python синтаксис: `python3 -m py_compile vlc_db.py`
+
+---
+
+
+
+### Added
+- **vlc_db.py**: Новая логика для outro
+  - Колонка `credits_duration INTEGER` в `series_settings` (вместо `outro_start`)
+  - Колонка `outro_triggered INTEGER` в `playback` для persistent флага
+  - Методы: `get/set_credits_duration()`, `get/set_outro_triggered()`
+  - CLI команды: `get-credits-duration`, `set-credits-duration`, `get-outro-triggered`, `set-outro-triggered`
+
+- **vlc-cec.sh**: Динамический расчёт outro
+  - Загрузка `CREDITS_DURATION` из БД при старте
+  - Динамический расчёт: `outro_start = video_duration - credits_duration`
+  - Persistent флаг `outro_triggered` сохраняется в БД между сессиями
+  - Автоматический сброс флага при перемотке назад через `outro_start`
+  - **RED кнопка:** 5-секундная коррекция времени при установке маркеров
+  - **RED кнопка в конце видео (>80%):** автоматический расчёт credits_duration
+
+### Changed
+- **vlc-cec.sh**: Outro теперь ставит на **pause** вместо exit
+- **vlc-cec.sh**: При срабатывании outro видео автоматически маркируется как [X] (100% просмотрено)
+- **vlc-cec.sh**: Проверка окончания видео перенесена ПОСЛЕ outro check (приоритет outro)
+- **serials.sh**: `get_settings_status_compact()` использует `credits_duration` вместо `outro_start`
+- **serials.sh**: Время intro/outro отображается в меню
+- **Логи:** Сокращены сообщения ("✓ Intro: 5s-57s" вместо "✓ Загружены intro markers...")
+
+### Fixed
+- **КРИТИЧНО:** serials.sh затирал времена при сохранении флагов
+  - До: При включении Skip Intro/Outro времена сбрасывались в NULL
+  - После: Времена сохраняются из БД, затираются только флаги
+- **vlc-cec.sh**: Порядок проверок в monitor loop (intro → outro → end-of-video)
+
+### Known Issues
+- ❌ **КРИТИЧНО:** Дублирование записей в БД `playback`
+  - Для одной серии создаются две записи: с basename и с full path
+  - `outro_triggered` сохраняется в неправильную запись
+  - Причина: несогласованность между `vlc-cec.sh` и `playback-tracker.sh`
+  - **См. HANDOFF-NEXT-SESSION.md для деталей**
+
+### Testing
+- ✅ Динамический расчёт outro работает (House of Guinness: credits 208-216s)
+- ✅ Outro pause срабатывает корректно
+- ✅ Сброс флага при перемотке работает
+- ✅ RED кнопка устанавливает маркеры с коррекцией
+- ✅ Времена НЕ затираются при сохранении флагов
+- ❌ outro_triggered сохраняется в дублированную запись
+
+### Technical
+- Бэкапы: `vlc-cec.sh`, `vlc_db.py`, `serials.sh` перед изменениями
+- Миграция БД: `ALTER TABLE series_settings ADD COLUMN credits_duration`
+- Миграция БД: `ALTER TABLE playback ADD COLUMN outro_triggered`
+- Добавлена переменная `VIDEO_BASENAME` в vlc-cec.sh
+
+---
+
 ## [2025-12-04] - Bugfix: serials.sh Cancel/ESC button
 
 ### Fixed

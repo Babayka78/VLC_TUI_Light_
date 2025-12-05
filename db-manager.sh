@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # db-manager.sh - Библиотека для работы с SQLite БД (через Python vlc_db.py)
-# Версия: 0.2.0
-# Дата: 02.12.2025
+# Версия: 0.3.0
+# Дата: 04.12.2025
 # Изменения: Рефакторинг для защиты от SQL injection - все SQL операции через vlc_db.py
 
 # Константы
@@ -228,6 +228,72 @@ db_find_other_versions() {
     local current_suffix="$2"
     
     python3 "$PYTHON_DB" find_versions "$series_prefix" "$current_suffix"
+}
+
+# ============================================================================
+# SKIP MARKERS ФУНКЦИИ
+# ============================================================================
+
+# Получение skip markers для сериала
+# Параметры: $1 - series_prefix, $2 - series_suffix
+# Возвращает: JSON {intro_start, intro_end, outro_start}
+db_get_skip_markers() {
+    local series_prefix="$1"
+    local series_suffix="$2"
+    
+    python3 "$PYTHON_DB" get-skip-markers "$series_prefix" "$series_suffix"
+}
+
+# Установка intro markers (начало и конец)
+# Параметры: $1 - series_prefix, $2 - series_suffix, $3 - start (секунды), $4 - end (секунды)
+# Возвращает: 0 при успехе, 1 при ошибке
+db_set_intro_markers() {
+    local series_prefix="$1"
+    local series_suffix="$2"
+    local start="$3"
+    local end="$4"
+    
+    local result=$(python3 "$PYTHON_DB" set-intro "$series_prefix" "$series_suffix" "$start" "$end")
+    
+    if [ "$result" = "OK" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Установка outro marker (начало концовки)
+# Параметры: $1 - series_prefix, $2 - series_suffix, $3 - start (секунды)
+# Возвращает: 0 при успехе, 1 при ошибке
+db_set_outro_marker() {
+    local series_prefix="$1"
+    local series_suffix="$2"
+    local start="$3"
+    
+    local result=$(python3 "$PYTHON_DB" set-outro "$series_prefix" "$series_suffix" "$start")
+    
+    if [ "$result" = "OK" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Очистка skip markers
+# Параметры: $1 - series_prefix, $2 - series_suffix, $3 - marker_type (intro/outro/all, по умолчанию all)
+# Возвращает: 0 при успехе, 1 при ошибке
+db_clear_skip_markers() {
+    local series_prefix="$1"
+    local series_suffix="$2"
+    local marker_type="${3:-all}"
+    
+    local result=$(python3 "$PYTHON_DB" clear-skip "$series_prefix" "$series_suffix" "$marker_type")
+    
+    if [ "$result" = "OK" ]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # ============================================================================
