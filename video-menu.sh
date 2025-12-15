@@ -1,22 +1,16 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# video-menu.sh - Меню выбора видеофайлов для VLC
+# Версия: 0.8.0
+# Дата: 16.12.2025
 
-# Проверка версии bash и автоматическое переключение на bash 5+
+
+# Проверка версии bash (требуется 4.0+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
-    # Ищем bash 5+ в PATH
-    for bash_path in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
-        if [ -x "$bash_path" ]; then
-            bash_version=$("$bash_path" -c 'echo ${BASH_VERSINFO[0]}')
-            if [ "$bash_version" -ge 4 ]; then
-                # Перезапускаем скрипт с правильным bash
-                exec "$bash_path" "$0" "$@"
-            fi
-        fi
-    done
-    # Если bash 5+ не найден - ошибка
     echo "❌ Ошибка: Требуется bash 4.0 или выше"
     echo "Текущая версия: $BASH_VERSION"
+    echo "Текущий путь: $(which bash)"
     echo ""
-    echo "Установите bash 5:"
+    echo "Установите bash 5 и убедитесь что он первый в PATH:"
     echo "  macOS: brew install bash"
     echo "  Debian: sudo apt-get install bash"
     exit 1
@@ -33,7 +27,7 @@ source "$SCRIPT_DIR/serials.sh"
 source "$SCRIPT_DIR/platform-utils.sh"
 
 # Начальная директория
-START_DIR="$HOME" #/mac_disk"
+START_DIR="$HOME"
 
 # Лог файл для тайминга (временная диагностика)
 TIMING_LOG="$SCRIPT_DIR/Log/video-menu-timing.log"
@@ -101,7 +95,7 @@ show_menu() {
     while IFS= read -r -d '' file; do
         local filename=$(basename "$file")
         video_filenames+=("$filename")
-    done < <(find "$current_dir" -maxdepth 1 -type f \( -iname "*.avi" -o -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" \) -print0 | platform_sort_null)
+    done < <(find -L "$current_dir" -maxdepth 1 -type f \( -iname "*.avi" -o -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" \) -print0 | platform_sort_null)
     
     # Пакетная загрузка статусов для всех файлов (ОПТИМИЗАЦИЯ: 1 SQL запрос вместо N)
     if [ ${#video_filenames[@]} -gt 0 ]; then

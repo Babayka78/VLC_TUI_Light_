@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # vlc-cec.sh - VLC Media Player с управлением через CEC
-# Версия: 0.7.0
-# Дата: 05.12.2025
+# Версия: 0.8.0
+# Дата: 16.12.2025
 # Changelog:
 #   0.7.0 - Outro Pause функция (05.12.2025)
 #           - Динамический расчёт outro (video_duration - credits_duration)
@@ -12,6 +12,18 @@
 #           - Проверка skip_intro/skip_outro флагов перед срабатыванием
 #           - Basename consistency для БД операций
 #           - Cache update после outro trigger
+
+# Проверка версии bash (требуется 4.0+)
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "❌ Ошибка: Требуется bash 4.0 или выше"
+    echo "Текущая версия: $BASH_VERSION"
+    echo "Текущий путь: $(which bash)"
+    echo ""
+    echo "Установите bash 5 и убедитесь что он первый в PATH:"
+    echo "  macOS: brew install bash"
+    echo "  Debian: sudo apt-get install bash"
+    exit 1
+fi
 
 # Парсинг параметров: [секунды] файл
 if [ $# -eq 2 ]; then
@@ -68,7 +80,7 @@ if [ ! -e "$CEC_DEVICE" ]; then
     echo "❌ CEC устройство не найдено: $CEC_DEVICE"
     echo "Доступные устройства:"
     ls -la /dev/cec* 2>/dev/null || echo "  Нет CEC устройств"
-    exit 1
+#    exit 1
 fi
 
 # VLC RC Log file
@@ -171,8 +183,8 @@ load_skip_markers() {
         
         if [ -n "$skip_data" ]; then
             # Парсим только intro (outro_start больше не используется)
-            LOADED_INTRO_START=$(echo "$skip_data" | grep -oP '"intro_start":\s*\K[0-9]+' || echo "")
-            LOADED_INTRO_END=$(echo "$skip_data" | grep -oP '"intro_end":\s*\K[0-9]+' || echo "")
+            LOADED_INTRO_START=$(echo "$skip_data" | sed -n 's/.*"intro_start":[[:space:]]*\([0-9]*\).*/\1/p')
+            LOADED_INTRO_END=$(echo "$skip_data" | sed -n 's/.*"intro_end":[[:space:]]*\([0-9]*\).*/\1/p')
             
             if [ -n "$LOADED_INTRO_START" ] && [ -n "$LOADED_INTRO_END" ]; then
                 echo "✓ Intro: ${LOADED_INTRO_START}s - ${LOADED_INTRO_END}s (skip: $([ $SKIP_INTRO_ENABLED -eq 1 ] && echo "ON" || echo "OFF"))"
@@ -358,14 +370,14 @@ OUTRO_TRIGGERED=${OUTRO_TRIGGERED:-0}
 
 # Запускаем VLC с RC интерфейсом
 if [ -n "$START_TIME" ]; then
-    cvlc --intf rc \
+    ./cvlc.sh --intf rc \
          --rc-host localhost:4212 \
          --fullscreen \
          --no-osd \
          --subsdec-encoding=Windows-1251 \
          "$VIDEO_FILE" :start-time=$START_TIME 2>&1 | grep -v "^\[" | grep -v "^VLC" | grep -v "^Command" &
 else
-    cvlc --intf rc \
+    ./cvlc.sh --intf rc \
          --rc-host localhost:4212 \
          --fullscreen \
          --no-osd \

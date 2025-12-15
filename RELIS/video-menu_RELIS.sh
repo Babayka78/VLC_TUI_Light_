@@ -1,4 +1,20 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# video-menu.sh - Меню выбора видеофайлов для VLC
+# Версия: 0.8.0
+# Дата: 16.12.2025
+
+
+# Проверка версии bash (требуется 4.0+)
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "❌ Ошибка: Требуется bash 4.0 или выше"
+    echo "Текущая версия: $BASH_VERSION"
+    echo "Текущий путь: $(which bash)"
+    echo ""
+    echo "Установите bash 5 и убедитесь что он первый в PATH:"
+    echo "  macOS: brew install bash"
+    echo "  Debian: sudo apt-get install bash"
+    exit 1
+fi
 
 # Путь к основному скрипту VLC-CEC
 #VLC_SCRIPT="$HOME/vlc/vlc-cec.sh"
@@ -8,9 +24,10 @@ VLC_SCRIPT="./vlc-cec.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/playback-tracker.sh"
 source "$SCRIPT_DIR/serials.sh"
+source "$SCRIPT_DIR/platform-utils.sh"
 
 # Начальная директория
-START_DIR="$HOME/mac_disk"
+START_DIR="$HOME"
 
 # Лог файл для тайминга (временная диагностика)
 TIMING_LOG="$SCRIPT_DIR/Log/video-menu-timing.log"
@@ -47,7 +64,7 @@ show_menu() {
     local title="Выбор видео: ${current_dir/#$HOME/~}"
     
     # Засекаем общее время
-    local start_total=$(date +%s.%N)
+    local start_total=$(platform_timestamp)
     timing_log "ENTER" "$current_dir"
     
     # ВАРИАНТ 2: Получаем статус настроек для отображения в подзаголовке
@@ -59,7 +76,7 @@ show_menu() {
     local items=()
     
     # Засекаем время построения списка
-    local start_build=$(date +%s.%N)
+    local start_build=$(platform_timestamp)
     
     # Добавляем ".." если не в корне
     if [ "$current_dir" != "$START_DIR" ]; then
@@ -78,7 +95,7 @@ show_menu() {
     while IFS= read -r -d '' file; do
         local filename=$(basename "$file")
         video_filenames+=("$filename")
-    done < <(find "$current_dir" -maxdepth 1 -type f \( -iname "*.avi" -o -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" \) -print0 | sort -z)
+    done < <(find -L "$current_dir" -maxdepth 1 -type f \( -iname "*.avi" -o -iname "*.mp4" -o -iname "*.mkv" -o -iname "*.mov" -o -iname "*.wmv" -o -iname "*.flv" \) -print0 | platform_sort_null)
     
     # Пакетная загрузка статусов для всех файлов (ОПТИМИЗАЦИЯ: 1 SQL запрос вместо N)
     if [ ${#video_filenames[@]} -gt 0 ]; then
@@ -86,8 +103,8 @@ show_menu() {
     fi
     
     # Логируем время построения списка
-    local end_build=$(date +%s.%N)
-    local build_time=$(echo "$end_build - $start_build" | bc)
+    local end_build=$(platform_timestamp)
+    local build_time=$(platform_time_diff "$start_build" "$end_build")
     timing_log "BUILD_LIST" "Files: ${#video_filenames[@]}, Time: ${build_time}s"
     
     # Теперь добавляем видео файлы в items (берем статус напрямую из кеша)
@@ -125,7 +142,7 @@ show_menu() {
     exec > /dev/tty
     
     # Засекаем время вызова dialog
-    local start_dialog=$(date +%s.%N)
+    local start_dialog=$(platform_timestamp)
     
     # Вычисляем оптимальную ширину окна
     local max_width=120
@@ -171,13 +188,13 @@ show_menu() {
     local exit_code=$?
     
     # Логируем время dialog
-    local end_dialog=$(date +%s.%N)
-    local dialog_time=$(echo "$end_dialog - $start_dialog" | bc)
+    local end_dialog=$(platform_timestamp)
+    local dialog_time=$(platform_time_diff "$start_dialog" "$end_dialog")
     timing_log "DIALOG" "Time: ${dialog_time}s"
     
     # Общее время
-    local end_total=$(date +%s.%N)
-    local total_time=$(echo "$end_total - $start_total" | bc)
+    local end_total=$(platform_timestamp)
+    local total_time=$(platform_time_diff "$start_total" "$end_total")
     timing_log "TOTAL" "Time: ${total_time}s"
     
     # Обработка выбора
